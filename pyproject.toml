@@ -1,0 +1,14 @@
+[tool.poetry]
+name = "capital-market-brazil"
+version = "0.1.0"
+description = ""
+authors = ["Victor Vilela <victor_vilel@hotmail.com>"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.12"
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

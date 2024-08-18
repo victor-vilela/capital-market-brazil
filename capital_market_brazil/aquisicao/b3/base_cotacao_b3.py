@@ -1,7 +1,10 @@
 import abc
+import os
 import typing
+from bs4 import BeautifulSoup
 from datetime import datetime, timedelta
 from pathlib import Path
+import requests
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.service import Service
@@ -25,28 +28,6 @@ class BaseCotacaoB3ETL(BaseETL, abc.ABC):
     _dados_entrada: typing.Dict[str, pd.DataFrame]
     _dados_saida: typing.Dict[str, pd.DataFrame]
 
-    @property
-    def dados_entrada(self) -> typing.Dict[str, pd.DataFrame]:
-        """
-        Acessa o dicionario de dados de entrada
-
-        :return: dicionário com o nome do arquivo e um dataframe com os dados
-        """
-        if self._dados_entrada is None:
-            self.extract()
-        return self._dados_entrada
-
-    @property
-    def dados_saida(self) -> typing.Dict[str, pd.DataFrame]:
-        """
-        Acessa o dicionario de dados de saida
-
-        :return: dicionário com o nome do arquivo e um dataframe com os dados
-        """
-        if self._dados_saida is None:
-            self.extract()
-        return self._dados_saida
-
     def __init__(
         self, entrada: str, saida: str, url: str, criar_caminho: bool = True
     ) -> None:
@@ -58,19 +39,13 @@ class BaseCotacaoB3ETL(BaseETL, abc.ABC):
         :param url: URL para a pagina de dados do IBGE
         :param criar_caminho: flag indicando se devemos criar os caminhos
         """
-        self.caminho_entrada = Path(entrada)
-        self.caminho_saida = Path(saida)
-
-        if criar_caminho:
-            self.caminho_entrada.mkdir(parents=True, exist_ok=True)
-            self.caminho_saida.mkdir(parents=True, exist_ok=True)
-
-        self._dados_entrada = None
-        self._dados_saida = None
+        super().__init__(entrada, saida, criar_caminho)
+        
+        self._url = url
+        
+        self._driver = self.connect_browser()
     
-    def connect_browser(
-        self, url: str = 'https://www.b3.com.br/pt_br/market-data-e-indices/servicos-de-dados/market-data/cotacoes/cotacoes/'
-        ) -> webdriver:
+    def connect_browser(self) -> webdriver:
         chrome_driver_version = '126.0.6478.126'
 
         options = webdriver.ChromeOptions()
@@ -82,7 +57,7 @@ class BaseCotacaoB3ETL(BaseETL, abc.ABC):
 
         driver = webdriver.Chrome(service=Service(ChromeDriverManager(driver_version=chrome_driver_version).install()), options=options)
         
-        driver.get(url)
+        driver.get(self._url)
 
         driver.implicitly_wait(3)
         WebDriverWait(driver, 5).until(
@@ -91,13 +66,12 @@ class BaseCotacaoB3ETL(BaseETL, abc.ABC):
         )
         return driver
     
-    def dict_to_download(self) -> typing.List[webdriver]: # type: ignore
+    def dict_to_download(self) -> typing.Dict[str, webdriver]: # type: ignore
         """
         Realiza um dicionario de cada item a ser baixado no site da B3
 
         :return: dicionario com o nome da pasta a ser criada e o elemento para ser baixado
         """
-        driver = self.connect_browser()
 
         dias_mes = [
             datetime.strftime(
@@ -105,12 +79,21 @@ class BaseCotacaoB3ETL(BaseETL, abc.ABC):
             )
             for dt in range(30)
         ]
-        dias_uteis = [dia for dia in dias_mes if datetime.strptime(dia, '%d/%m/%Y').isoweekday() not in [6, 7]]
+        
+        html_element = self._driver.find_element(By.XPATH, '/html/body/div/div/div/div[2]').get_attribute('outerHTML')
+        soup = BeautifulSoup(html_element, 'html.parser')
 
-        elements = []
-        for dia in dias_uteis:
+        elements = {}
+        for dia in dias_mes:
             try:
-                elements.append(driver.find_element(By.LINK_TEXT, f'{dia}'))
+                key_folder = datetime.strptime(dia, '%d/%m/%Y').strftime('%Y_%m') + '.zip'
+                
+                if key_folder not in elements:
+                    elements[key_folder] = []
+                
+                # Captura o elemento e adiciona à lista correspondente
+                element = soup.find('a').attrs['href']
+                elements[key_folder].append(element)
             except:
                 pass
 
@@ -120,13 +103,14 @@ class BaseCotacaoB3ETL(BaseETL, abc.ABC):
         """
         Realiza o download de cada arquivo em sua respectiva pasta
         """
-        driver = self.connect_browser()
-        for link in self.dict_to_download():
-            caminho_arq = self.caminho_saida
-            with open(caminho_arq, 'wb') as arq:
-                arq.write(driver.execute_script('arguments[0].click();', link))
         
-    @abc.abstractmethod
+        for name_folder, list_link in self.dict_to_download().items():
+            for link in list_link:
+                r = requests.get(link, stream = True)
+                with open(self.caminho_entrada / name_folder, 'wb') as arq:
+                    arq.write(r.content)
+        
+    # @abc.abstractmethod
     def extract(self) -> None:
         """
         Extrai os dados do objeto

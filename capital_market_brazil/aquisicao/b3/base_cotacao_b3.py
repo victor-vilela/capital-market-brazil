@@ -105,9 +105,9 @@ class BaseCotacaoB3ETL(BaseETL, abc.ABC):
         """
         
         for name_folder, list_link in self.dict_to_download().items():
-            for link in list_link:
-                r = requests.get(link, stream = True)
-                with open(self.caminho_entrada / name_folder, 'wb') as arq:
+            with open(self.caminho_entrada / name_folder, 'wb') as arq:
+                for link in list_link:
+                    r = requests.get(link, stream = True)
                     arq.write(r.content)
         
     # @abc.abstractmethod

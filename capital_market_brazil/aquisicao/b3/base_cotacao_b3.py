@@ -5,6 +5,9 @@ from bs4 import BeautifulSoup
 from datetime import datetime, timedelta
 from pathlib import Path
 import requests
+import httplib2
+import wget
+import shutil
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.service import Service
@@ -29,7 +32,12 @@ class BaseCotacaoB3ETL(BaseETL, abc.ABC):
     _dados_saida: typing.Dict[str, pd.DataFrame]
 
     def __init__(
-        self, entrada: str, saida: str, url: str, criar_caminho: bool = True
+        self, 
+        entrada: str, 
+        saida: str, 
+        url: str, 
+        start: int = 30, 
+        criar_caminho: bool = True
     ) -> None:
         """
         Instancia o objeto de ETL Base
@@ -43,72 +51,51 @@ class BaseCotacaoB3ETL(BaseETL, abc.ABC):
         
         self._url = url
         
-        self._driver = self.connect_browser()
+        self._start = datetime.now() - timedelta(days = start)
     
-    def connect_browser(self) -> webdriver:
-        chrome_driver_version = '126.0.6478.126'
-
-        options = webdriver.ChromeOptions()
-        options.binary_location = "/usr/bin/chromium"
-        options.add_argument('--no-sandbox')
-        options.add_argument('--disable-dev-shm-usage')
-        options.add_argument('--headless')
-        options.add_argument('--remote-debugging-port=9222')
-
-        driver = webdriver.Chrome(service=Service(ChromeDriverManager(driver_version=chrome_driver_version).install()), options=options)
-        
-        driver.get(self._url)
-
-        driver.implicitly_wait(3)
-        WebDriverWait(driver, 5).until(
-            EC.frame_to_be_available_and_switch_to_it((By.ID, 'bvmf_iframe')),
-            EC.frame_to_be_available_and_switch_to_it((By.ID, 'iFrameResizer0'))
-        )
-        return driver
-    
-    def dict_to_download(self) -> typing.Dict[str, webdriver]: # type: ignore
-        """
-        Realiza um dicionario de cada item a ser baixado no site da B3
-
-        :return: dicionario com o nome da pasta a ser criada e o elemento para ser baixado
-        """
-
-        dias_mes = [
-            datetime.strftime(
-                datetime.now() - timedelta(days=dt), format="%d/%m/%Y"
-            )
-            for dt in range(30)
+    def list_to_download(self):
+        files = [
+            file.replace('.zip','')
+            for file in os.listdir(self.caminho_entrada) 
+            if file.endswith('.zip')
         ]
-        
-        html_element = self._driver.find_element(By.XPATH, '/html/body/div/div/div/div[2]').get_attribute('outerHTML')
-        soup = BeautifulSoup(html_element, 'html.parser')
+        download_dates = pd.to_datetime(files)
 
-        elements = {}
-        for dia in dias_mes:
-            try:
-                key_folder = datetime.strptime(dia, '%d/%m/%Y').strftime('%Y_%m') + '.zip'
-                
-                if key_folder not in elements:
-                    elements[key_folder] = []
-                
-                # Captura o elemento e adiciona à lista correspondente
-                element = soup.find('a').attrs['href']
-                elements[key_folder].append(element)
-            except:
-                pass
+        current_date = datetime.now().date()
+        data_range = pd.date_range(self._start.date(), current_date)
+        return data_range.difference(download_dates)
 
-        return elements
-    
     def download_content(self) -> None:
         """
         Realiza o download de cada arquivo em sua respectiva pasta
         """
-        
-        for name_folder, list_link in self.dict_to_download().items():
-            with open(self.caminho_entrada / name_folder, 'wb') as arq:
-                for link in list_link:
-                    r = requests.get(link, stream = True)
-                    arq.write(r.content)
+        data_range_to_download = self.list_to_download()
+        http_client = httplib2.Http(str(self.caminho_entrada / '.cache'))
+
+        for market_date in data_range_to_download:
+            formatted_date = market_date.strftime('%Y-%m-%d')
+            url = str(self._url) + formatted_date
+            
+            try:
+                # Requisição HTTP
+                response, content = http_client.request(
+                    str(url), headers={'Connection': 'keep-alive'}
+                )
+                
+                # Verifica se o conteúdo existe antes de baixar
+                if response.status == 200 and len(content) > 0:
+                    file_path = f'{formatted_date}.zip'
+                    path_download = self.caminho_entrada / file_path
+                    wget.download(url, str(path_download))
+                    print(f"\nArquivo {file_path} baixado com sucesso.")
+                else:
+                    print(f"\nArquivo não encontrado para a data: {formatted_date}")
+            
+            except Exception as e:
+                print(f"\nErro ao baixar arquivo para a data {formatted_date}: {e}")
+
+        # Limpeza do cache
+        shutil.rmtree(self.caminho_entrada / '.cache', ignore_errors=True)
         
     # @abc.abstractmethod
     def extract(self) -> None:
